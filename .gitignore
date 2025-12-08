@@ -41,3 +41,9 @@ tmp/
 # Output files (user generated)
 transcriptions/
 outputs/
+
+# Data directory (user data - not for git)
+data/uploads/
+data/outputs/
+data/*.db
+data/*.db-journal
