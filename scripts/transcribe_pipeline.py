@@ -107,8 +107,7 @@ Monitor Progress:
     parser.add_argument(
         '--model',
         default='medium',
-        choices=['tiny', 'base', 'small', 'medium', 'large-v3'],
-        help='Whisper model size (default: medium)'
+        help='Whisper model: tiny, base, small, medium, large-v3, or custom model name from models/ directory (default: medium)'
     )
     parser.add_argument(
         '--language',
@@ -163,6 +162,24 @@ Monitor Progress:
     setup_logging(args.verbose)
     logger = logging.getLogger(__name__)
 
+    # Resolve model path
+    standard_models = ['tiny', 'base', 'small', 'medium', 'large-v3']
+    if args.model in standard_models:
+        # Standard model - use mlx-community or local
+        local_path = project_root / "models" / f"whisper-{args.model}-mlx"
+        if local_path.exists():
+            model_path = str(local_path)
+        else:
+            model_path = f"mlx-community/whisper-{args.model}-mlx"
+    else:
+        # Custom model - check local models directory
+        local_path = project_root / "models" / args.model
+        if local_path.exists():
+            model_path = str(local_path)
+        else:
+            # Try as HuggingFace repo
+            model_path = args.model
+
     # Validate arguments
     if args.batch:
         # Batch mode
@@ -194,7 +211,7 @@ Monitor Progress:
     logger.info("🚀 MLX PIPELINE TRANSCRIPTION")
     logger.info("=" * 70)
     logger.info(f"Mode: {'Batch' if args.batch else 'Single'} ({len(file_pairs)} files)")
-    logger.info(f"Model: mlx-community/whisper-{args.model}-mlx")
+    logger.info(f"Model: {model_path}")
     logger.info(f"Language: {args.language}")
     logger.info(f"Pipeline Config:")
     logger.info(f"  - Preprocessing: {args.preprocess_workers} parallel workers (CPU)")
@@ -211,7 +228,7 @@ Monitor Progress:
 
     # Create pipeline
     pipeline = PipelineTranscriber(
-        model=f"mlx-community/whisper-{args.model}-mlx",
+        model=model_path,
         language=args.language,
         num_transcribe_processes=args.transcribe_processes,
         workers_per_process=args.transcribe_workers,

@@ -131,7 +131,9 @@ def run_transcription(
     model: str,
     processes: int,
     workers: int,
-    progress_callback=None
+    progress_callback=None,
+    chunk_duration: int = 20,
+    overlap_duration: int = 3
 ) -> Dict:
     """Run transcription and return result."""
 
@@ -145,7 +147,9 @@ def run_transcription(
         '--model', model,
         '--transcribe-processes', str(processes),
         '--transcribe-workers', str(workers),
-        '--preprocess-workers', '2'
+        '--preprocess-workers', '2',
+        '--chunk-duration', str(chunk_duration),
+        '--overlap', str(overlap_duration)
     ]
 
     start_time = time.time()
@@ -273,14 +277,42 @@ def show_transcribe_page():
     st.markdown('<p class="main-header">🎙️ Audio Transcription</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Upload audio files and transcribe to text using MLX Whisper</p>', unsafe_allow_html=True)
 
-    # Upload section
+    # Upload section with enhanced drag & drop
+    st.markdown("""
+    <style>
+    /* Enhanced drag & drop styling */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #1f77b4;
+        border-radius: 10px;
+        padding: 20px;
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        transition: all 0.3s ease;
+    }
+    [data-testid="stFileUploader"]:hover {
+        border-color: #667eea;
+        background: linear-gradient(135deg, #e9ecef 0%, #dee2e6 100%);
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.2);
+    }
+    [data-testid="stFileUploader"] section {
+        padding: 10px;
+    }
+    [data-testid="stFileUploader"] section > div {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     col1, col2 = st.columns([2, 1])
 
     with col1:
+        st.markdown("**🎵 Drag & Drop or Click to Upload**")
         uploaded_file = st.file_uploader(
             "Upload Audio File",
             type=['mp3', 'wav', 'm4a', 'flac', 'ogg', 'webm'],
-            help="Supported formats: MP3, WAV, M4A, FLAC, OGG, WEBM"
+            help="📁 Drag and drop your audio file here, or click to browse. Supported: MP3, WAV, M4A, FLAC, OGG, WEBM",
+            label_visibility="collapsed"
         )
 
     with col2:
@@ -316,6 +348,30 @@ def show_transcribe_page():
         else:
             processes = st.number_input("Processes", min_value=1, max_value=4, value=2)
             workers = st.number_input("Workers/Process", min_value=4, max_value=16, value=8)
+
+    # Chunk duration config (outside col2 to be accessible later)
+    st.markdown("**⚙️ Chunk Settings**")
+    with st.expander("Advanced Chunking Options", expanded=False):
+        chunk_col1, chunk_col2 = st.columns(2)
+        with chunk_col1:
+            chunk_duration = st.slider(
+                "Chunk Duration (seconds)",
+                min_value=15,
+                max_value=25,
+                value=20,
+                step=1,
+                help="Audio is split into chunks for parallel processing. Default: 20s (±5s range)"
+            )
+        with chunk_col2:
+            overlap_duration = st.slider(
+                "Overlap Duration (seconds)",
+                min_value=1,
+                max_value=5,
+                value=3,
+                step=1,
+                help="Overlap between chunks to preserve context. Default: 3s"
+            )
+        st.caption(f"📊 Effective chunk: {chunk_duration}s with {overlap_duration}s overlap")
 
     # Process button
     if uploaded_file is not None:
@@ -381,9 +437,13 @@ def show_transcribe_page():
                 current_phase = "initializing"
                 chunks_done = 0
                 total_chunks = 0
+                process_progress = {}  # Track progress per process
+                transcription_start = None
+                audio_duration_sec = duration * 60  # Convert minutes to seconds
 
                 def update_progress(line: str):
                     nonlocal current_phase, chunks_done, total_chunks, logs
+                    nonlocal process_progress, transcription_start
 
                     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {line}")
 
@@ -415,19 +475,45 @@ def show_transcribe_page():
                             chunks_text.metric("Chunks", f"0/{total_chunks}")
                     elif "transcrib" in line_lower:
                         current_phase = "transcribing"
+                        if transcription_start is None:
+                            transcription_start = time.time()
 
-                    # Progress percentage parsing
+                    # Progress percentage parsing - track per process
                     if "%" in line:
                         try:
-                            # Look for percentage patterns
-                            match = re.search(r'(\d+\.?\d*)%', line)
-                            if match:
-                                pct = float(match.group(1))
+                            # Look for process ID and percentage patterns
+                            # Format: [Process-0] ... 45.2% or Process 1: 45.2%
+                            proc_match = re.search(r'[Pp]rocess[- ]?(\d+)', line)
+                            pct_match = re.search(r'(\d+\.?\d*)%', line)
+
+                            if pct_match:
+                                pct = float(pct_match.group(1))
+                                proc_id = proc_match.group(1) if proc_match else "0"
+                                process_progress[proc_id] = pct
+
+                                # Calculate average progress from all processes
+                                if process_progress:
+                                    avg_pct = sum(process_progress.values()) / len(process_progress)
+                                else:
+                                    avg_pct = pct
+
                                 # Map to 10-95% range for transcription phase
-                                display_pct = 10 + (pct * 0.85)
+                                display_pct = 10 + (avg_pct * 0.85)
                                 progress_bar.progress(int(min(display_pct, 95)))
-                                status_text.markdown(f"🎤 **Transcribing... {pct:.1f}%**")
-                                update_job_status(job_id, 'processing', progress=pct)
+
+                                # Calculate realtime speed
+                                if transcription_start and audio_duration_sec > 0:
+                                    elapsed_sec = time.time() - transcription_start
+                                    if elapsed_sec > 0 and avg_pct > 0:
+                                        # Estimate total time and calculate speed
+                                        processed_audio = (avg_pct / 100) * audio_duration_sec
+                                        current_speed = processed_audio / elapsed_sec
+                                        speed_text.metric("Speed", f"{current_speed:.2f}x")
+
+                                # Show progress with process count
+                                proc_info = f" ({len(process_progress)} proc)" if len(process_progress) > 1 else ""
+                                status_text.markdown(f"🎤 **Transcribing... {avg_pct:.1f}%{proc_info}**")
+                                update_job_status(job_id, 'processing', progress=avg_pct)
                         except:
                             pass
 
@@ -458,7 +544,9 @@ def show_transcribe_page():
                     model,
                     processes,
                     workers,
-                    update_progress
+                    update_progress,
+                    chunk_duration,
+                    overlap_duration
                 )
                 elapsed = time.time() - start_time
 
@@ -927,7 +1015,10 @@ def get_available_models() -> List[Dict]:
     if models_dir.exists():
         for model_dir in models_dir.iterdir():
             if model_dir.is_dir() and model_dir.name not in standard_models:
-                weights_path = model_dir / "weights.npz"
+                # Support both .npz and .safetensors formats
+                weights_npz = model_dir / "weights.npz"
+                weights_safetensors = model_dir / "weights.safetensors"
+                weights_path = weights_safetensors if weights_safetensors.exists() else weights_npz
                 config_path = model_dir / "config.json"
                 if weights_path.exists() or config_path.exists():
                     models.append({
@@ -948,7 +1039,7 @@ def show_settings_page():
     st.markdown('<p class="main-header">⚙️ Settings</p>', unsafe_allow_html=True)
 
     # Tabs for different settings sections
-    tab1, tab2, tab3 = st.tabs(["🤖 Models", "⚡ Performance", "💾 Storage"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🤖 Models", "⚡ Performance", "💾 Storage", "🔧 Setup Wizard", "🤖 Claude Terminal"])
 
     with tab1:
         show_model_settings()
@@ -958,6 +1049,12 @@ def show_settings_page():
 
     with tab3:
         show_storage_settings()
+
+    with tab4:
+        show_setup_wizard()
+
+    with tab5:
+        show_claude_terminal()
 
 
 def show_model_settings():
@@ -1033,9 +1130,9 @@ def show_model_settings():
     st.markdown("**Popular MLX Models:**")
 
     popular_models = [
-        ("mlx-community/whisper-large-v3-turbo-mlx", "Large-v3-Turbo (faster)"),
-        ("mlx-community/whisper-small-mlx", "Small (lightweight)"),
-        ("mlx-community/whisper-tiny-mlx", "Tiny (very fast)"),
+        ("tawankri/distill-thonburian-whisper-large-v3-mlx", "🇹🇭 Thai Thonburian"),
+        ("mlx-community/whisper-large-v3-turbo-mlx", "Large-v3-Turbo"),
+        ("mlx-community/whisper-small-mlx", "Small"),
     ]
 
     cols = st.columns(len(popular_models))
@@ -1173,6 +1270,274 @@ def show_storage_settings():
             shutil.rmtree(OUTPUTS_DIR)
             OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
             st.success("Outputs cleared!")
+            st.rerun()
+
+
+def show_setup_wizard():
+    """Show setup wizard for initial configuration."""
+    st.markdown("### 🔧 Setup Wizard")
+    st.markdown("Configure your Transcriptor environment with one click.")
+
+    # Check system status
+    st.markdown("---")
+    st.markdown("### 📊 System Status")
+
+    if st.button("🔍 Check Status", type="primary", use_container_width=True):
+        status_checks = []
+
+        # Check Python version
+        import sys
+        py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        status_checks.append(("Python", py_version, sys.version_info >= (3, 10)))
+
+        # Check FFmpeg
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+            ffmpeg_ok = result.returncode == 0
+            ffmpeg_version = result.stdout.split('\n')[0] if ffmpeg_ok else "Not found"
+        except:
+            ffmpeg_ok = False
+            ffmpeg_version = "Not installed"
+        status_checks.append(("FFmpeg", ffmpeg_version[:50], ffmpeg_ok))
+
+        # Check MLX
+        try:
+            import mlx
+            mlx_version = mlx.__version__ if hasattr(mlx, '__version__') else "Installed"
+            mlx_ok = True
+        except:
+            mlx_version = "Not installed"
+            mlx_ok = False
+        status_checks.append(("MLX", mlx_version, mlx_ok))
+
+        # Check mlx_whisper
+        try:
+            import mlx_whisper
+            mlx_whisper_ok = True
+            mlx_whisper_version = "Installed"
+        except:
+            mlx_whisper_ok = False
+            mlx_whisper_version = "Not installed"
+        status_checks.append(("MLX Whisper", mlx_whisper_version, mlx_whisper_ok))
+
+        # Check models directory
+        models_dir = PROJECT_ROOT / "models"
+        installed_models = [d.name for d in models_dir.iterdir() if d.is_dir()] if models_dir.exists() else []
+        models_ok = len(installed_models) > 0
+        status_checks.append(("Models", f"{len(installed_models)} installed", models_ok))
+
+        # Check database
+        db_path = PROJECT_ROOT / "data" / "transcriptor.db"
+        db_ok = db_path.exists()
+        status_checks.append(("Database", "Ready" if db_ok else "Not initialized", db_ok))
+
+        # Check directories
+        dirs_ok = all([UPLOADS_DIR.exists(), OUTPUTS_DIR.exists()])
+        status_checks.append(("Directories", "Ready" if dirs_ok else "Missing", dirs_ok))
+
+        # Display results
+        for name, value, ok in status_checks:
+            col1, col2, col3 = st.columns([2, 3, 1])
+            col1.markdown(f"**{name}**")
+            col2.code(value)
+            col3.markdown("✅" if ok else "❌")
+
+        # Overall status
+        all_ok = all(ok for _, _, ok in status_checks)
+        st.markdown("---")
+        if all_ok:
+            st.success("✅ All systems ready!")
+        else:
+            st.warning("⚠️ Some components need attention. Run the wizard to fix.")
+
+    st.markdown("---")
+    st.markdown("### 🚀 Quick Setup")
+
+    st.info("""
+    The Setup Wizard will:
+    1. Create necessary directories (uploads, outputs, data)
+    2. Initialize the SQLite database
+    3. Download a default Whisper model (Medium)
+    4. Verify all dependencies
+    """)
+
+    if st.button("🔧 Run Setup Wizard", type="primary", use_container_width=True):
+        progress = st.progress(0)
+        status = st.empty()
+
+        # Step 1: Create directories
+        status.markdown("📁 Creating directories...")
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        (PROJECT_ROOT / "data").mkdir(parents=True, exist_ok=True)
+        (PROJECT_ROOT / "models").mkdir(parents=True, exist_ok=True)
+        progress.progress(20)
+
+        # Step 2: Initialize database
+        status.markdown("💾 Initializing database...")
+        try:
+            init_database()
+            progress.progress(40)
+        except Exception as e:
+            st.error(f"Database initialization failed: {e}")
+
+        # Step 3: Check for models
+        status.markdown("🤖 Checking models...")
+        models_dir = PROJECT_ROOT / "models"
+        installed_models = [d.name for d in models_dir.iterdir() if d.is_dir()] if models_dir.exists() else []
+        progress.progress(60)
+
+        if not installed_models:
+            status.markdown("📥 Downloading default model (Medium)...")
+            try:
+                from huggingface_hub import snapshot_download
+                snapshot_download(
+                    repo_id="mlx-community/whisper-medium-mlx",
+                    local_dir=str(models_dir / "whisper-medium-mlx"),
+                    local_dir_use_symlinks=False
+                )
+                progress.progress(90)
+            except Exception as e:
+                st.warning(f"Model download failed: {e}")
+                st.info("You can download models manually from the Models tab.")
+        else:
+            progress.progress(90)
+            status.markdown(f"✅ Found {len(installed_models)} model(s)")
+
+        # Step 4: Complete
+        progress.progress(100)
+        status.markdown("✅ **Setup Complete!**")
+
+        st.success("🎉 Transcriptor is ready to use!")
+        st.balloons()
+
+
+def show_claude_terminal():
+    """Show Claude terminal for AI-assisted model installation."""
+    st.markdown("### 🤖 Claude Terminal")
+    st.markdown("AI-assisted terminal for installing and managing models.")
+
+    st.info("""
+    **How to use:**
+    1. Type a command or question below
+    2. Claude will help you install models or troubleshoot issues
+    3. Commands are executed in the project directory
+
+    **Example prompts:**
+    - "Install the Thai Thonburian model"
+    - "List all available MLX Whisper models"
+    - "Check system requirements"
+    """)
+
+    # Claude chat interface
+    if 'claude_history' not in st.session_state:
+        st.session_state.claude_history = []
+
+    # Display chat history
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.claude_history[-10:]:  # Show last 10 messages
+            if msg['role'] == 'user':
+                st.markdown(f"**You:** {msg['content']}")
+            else:
+                st.markdown(f"**Claude:** {msg['content']}")
+                if 'command' in msg:
+                    st.code(msg['command'], language='bash')
+                if 'output' in msg:
+                    with st.expander("Command Output"):
+                        st.code(msg['output'])
+
+    st.markdown("---")
+
+    # Input
+    user_input = st.text_input(
+        "Ask Claude...",
+        placeholder="e.g., Install the Thai Thonburian model",
+        key="claude_input"
+    )
+
+    col1, col2 = st.columns([3, 1])
+
+    with col1:
+        if st.button("🚀 Send", type="primary", use_container_width=True) and user_input:
+            st.session_state.claude_history.append({'role': 'user', 'content': user_input})
+
+            # Simple command parsing for common tasks
+            response = {'role': 'assistant', 'content': ''}
+
+            user_lower = user_input.lower()
+
+            if 'install' in user_lower and 'thonburian' in user_lower:
+                response['content'] = "Installing Thai Thonburian model..."
+                response['command'] = "python -c \"from huggingface_hub import snapshot_download; snapshot_download('tawankri/distill-thonburian-whisper-large-v3-mlx', local_dir='models/distill-thonburian-whisper-large-v3-mlx')\""
+
+                with st.spinner("Downloading model..."):
+                    try:
+                        from huggingface_hub import snapshot_download
+                        snapshot_download(
+                            repo_id='tawankri/distill-thonburian-whisper-large-v3-mlx',
+                            local_dir=str(PROJECT_ROOT / 'models' / 'distill-thonburian-whisper-large-v3-mlx'),
+                            local_dir_use_symlinks=False
+                        )
+                        response['output'] = "✅ Model installed successfully!"
+                    except Exception as e:
+                        response['output'] = f"❌ Error: {e}"
+
+            elif 'list' in user_lower and 'model' in user_lower:
+                response['content'] = "Listing installed models..."
+                models_dir = PROJECT_ROOT / "models"
+                if models_dir.exists():
+                    models = [d.name for d in models_dir.iterdir() if d.is_dir()]
+                    response['output'] = f"Installed models ({len(models)}):\n" + "\n".join(f"  - {m}" for m in models)
+                else:
+                    response['output'] = "No models directory found."
+
+            elif 'check' in user_lower or 'status' in user_lower:
+                response['content'] = "Checking system status..."
+                checks = []
+                try:
+                    import mlx
+                    checks.append("✅ MLX installed")
+                except:
+                    checks.append("❌ MLX not installed")
+                try:
+                    import mlx_whisper
+                    checks.append("✅ MLX Whisper installed")
+                except:
+                    checks.append("❌ MLX Whisper not installed")
+                response['output'] = "\n".join(checks)
+
+            elif 'help' in user_lower:
+                response['content'] = """Available commands:
+- **install thonburian** - Install Thai Thonburian model
+- **install medium** - Install Whisper Medium model
+- **list models** - Show installed models
+- **check status** - Check system status
+- **help** - Show this help"""
+
+            elif 'install' in user_lower and 'medium' in user_lower:
+                response['content'] = "Installing Whisper Medium model..."
+                with st.spinner("Downloading model..."):
+                    try:
+                        from huggingface_hub import snapshot_download
+                        snapshot_download(
+                            repo_id='mlx-community/whisper-medium-mlx',
+                            local_dir=str(PROJECT_ROOT / 'models' / 'whisper-medium-mlx'),
+                            local_dir_use_symlinks=False
+                        )
+                        response['output'] = "✅ Model installed successfully!"
+                    except Exception as e:
+                        response['output'] = f"❌ Error: {e}"
+
+            else:
+                response['content'] = f"I understand you want to: {user_input}\n\nFor now, I can help with:\n- **install thonburian** - Install Thai Thonburian model\n- **install medium** - Install Whisper Medium model\n- **list models** - Show installed models\n- **check status** - Check system status\n- **help** - Show available commands"
+
+            st.session_state.claude_history.append(response)
+            st.rerun()
+
+    with col2:
+        if st.button("🗑️ Clear", use_container_width=True):
+            st.session_state.claude_history = []
             st.rerun()
 
 

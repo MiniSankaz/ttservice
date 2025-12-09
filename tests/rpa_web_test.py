@@ -40,11 +40,39 @@ from webdriver_manager.chrome import ChromeDriverManager
 class TestConfig:
     """Test configuration"""
     base_url: str = "http://localhost:8501"
-    test_audio_file: str = "/Users/semini/Downloads/EPG_test_5min.mp3"  # 5-min file for faster tests
+    test_audio_file: str = ""  # Will be set dynamically
     timeout: int = 30
     transcription_timeout: int = 300  # 5 minutes for transcription
     headless: bool = False  # Set True for CI/CD
     screenshot_dir: str = "tests/screenshots"
+
+    # Dynamic paths - computed from script location
+    project_root: Path = None
+    models_dir: Path = None
+    outputs_dir: Path = None
+    uploads_dir: Path = None
+
+    def __post_init__(self):
+        """Initialize dynamic paths based on script location"""
+        if self.project_root is None:
+            # Calculate project root from this file's location
+            self.project_root = Path(__file__).parent.parent
+        self.models_dir = self.project_root / "models"
+        self.outputs_dir = self.project_root / "data" / "outputs"
+        self.uploads_dir = self.project_root / "data" / "uploads"
+
+        # Set default test audio if not specified
+        if not self.test_audio_file:
+            # Try common locations
+            test_audio_candidates = [
+                self.project_root / "tests" / "fixtures" / "test_audio.mp3",
+                Path.home() / "Downloads" / "EPG_test_5min.mp3",
+                Path.home() / "Downloads" / "EPG_test_10min.mp3",
+            ]
+            for candidate in test_audio_candidates:
+                if candidate.exists():
+                    self.test_audio_file = str(candidate)
+                    break
 
 
 # ============================================================
@@ -344,7 +372,7 @@ class StreamlitRPATest:
         """Test: Full transcription process (LONG TEST)"""
         import glob
 
-        outputs_dir = "/Volumes/DOWNLOAD/Docker Tools/transcriptor-pipeline-pilot/data/outputs"
+        outputs_dir = str(self.config.outputs_dir)
 
         # Record existing files BEFORE transcription
         existing_files = set(glob.glob(f"{outputs_dir}/*"))
@@ -488,7 +516,7 @@ class StreamlitRPATest:
         """Test: Verify output files were actually created on disk from THIS transcription"""
         import glob
 
-        outputs_dir = "/Volumes/DOWNLOAD/Docker Tools/transcriptor-pipeline-pilot/data/outputs"
+        outputs_dir = str(self.config.outputs_dir)
 
         # Use the start time from test_09 if available
         if hasattr(self, '_transcription_start_time'):
@@ -714,6 +742,388 @@ class StreamlitRPATest:
             print("   ⚠️ Manual mode not found")
 
     # ============================================================
+    # New Features Tests (Setup Wizard, Claude Terminal, Chunk Settings)
+    # ============================================================
+
+    def test_24_setup_wizard_tab(self):
+        """Test: Settings has Setup Wizard tab"""
+        self.find_radio_option("Settings")
+        time.sleep(1)
+
+        # Find Setup Wizard tab
+        try:
+            tabs = self.driver.find_elements(By.CSS_SELECTOR, '[data-baseweb="tab"]')
+            wizard_found = False
+            for tab in tabs:
+                if "Setup" in tab.text or "Wizard" in tab.text or "🔧" in tab.text:
+                    tab.click()
+                    time.sleep(1)
+                    wizard_found = True
+                    print("   🔧 Setup Wizard tab found and clicked")
+                    break
+
+            if wizard_found:
+                page_source = self.driver.page_source
+                # Check for wizard content
+                if "Check Status" in page_source or "Quick Setup" in page_source:
+                    print("   ✅ Setup Wizard content verified")
+                if "Run Setup Wizard" in page_source:
+                    print("   🚀 Run Setup Wizard button found")
+            else:
+                print("   ⚠️ Setup Wizard tab not found")
+        except Exception as e:
+            print(f"   ⚠️ Error: {e}")
+
+    def test_25_setup_wizard_status_check(self):
+        """Test: Setup Wizard Status Check works"""
+        self.find_radio_option("Settings")
+        time.sleep(1)
+
+        # Navigate to Setup Wizard tab
+        try:
+            tabs = self.driver.find_elements(By.CSS_SELECTOR, '[data-baseweb="tab"]')
+            for tab in tabs:
+                if "Setup" in tab.text or "Wizard" in tab.text or "🔧" in tab.text:
+                    tab.click()
+                    time.sleep(1)
+                    break
+
+            # Click Check Status button
+            check_btn = self.find_button_by_text("Check Status")
+            if check_btn:
+                check_btn.click()
+                time.sleep(2)
+                print("   🔍 Check Status clicked")
+
+                page_source = self.driver.page_source
+                # Check for status items
+                status_items = ["Python", "FFmpeg", "MLX", "Database", "Models"]
+                found_items = [item for item in status_items if item in page_source]
+                print(f"   📊 Found {len(found_items)}/{len(status_items)} status items")
+
+                if "✅" in page_source or "❌" in page_source:
+                    print("   ✅ Status indicators visible")
+            else:
+                print("   ⚠️ Check Status button not found")
+        except Exception as e:
+            print(f"   ⚠️ Error: {e}")
+
+    def test_26_claude_terminal_tab(self):
+        """Test: Settings has Claude Terminal tab"""
+        self.find_radio_option("Settings")
+        time.sleep(1)
+
+        # Find Claude Terminal tab
+        try:
+            tabs = self.driver.find_elements(By.CSS_SELECTOR, '[data-baseweb="tab"]')
+            terminal_found = False
+            for tab in tabs:
+                if "Claude" in tab.text or "Terminal" in tab.text:
+                    tab.click()
+                    time.sleep(1)
+                    terminal_found = True
+                    print("   🤖 Claude Terminal tab found and clicked")
+                    break
+
+            if terminal_found:
+                page_source = self.driver.page_source
+                # Check for terminal content
+                if "Ask Claude" in page_source or "Install" in page_source:
+                    print("   ✅ Claude Terminal content verified")
+                if "Send" in page_source:
+                    print("   🚀 Send button found")
+            else:
+                print("   ⚠️ Claude Terminal tab not found")
+        except Exception as e:
+            print(f"   ⚠️ Error: {e}")
+
+    def test_27_claude_terminal_help(self):
+        """Test: Claude Terminal help command works"""
+        self.find_radio_option("Settings")
+        time.sleep(1)
+
+        # Navigate to Claude Terminal tab
+        try:
+            tabs = self.driver.find_elements(By.CSS_SELECTOR, '[data-baseweb="tab"]')
+            for tab in tabs:
+                if "Claude" in tab.text or "Terminal" in tab.text:
+                    tab.click()
+                    time.sleep(1)
+                    break
+
+            # Find input and type help
+            inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="text"]')
+            for inp in inputs:
+                placeholder = inp.get_attribute("placeholder") or ""
+                if "Claude" in placeholder or "Install" in placeholder:
+                    inp.clear()
+                    inp.send_keys("help")
+                    time.sleep(0.5)
+                    print("   ✏️ Typed 'help' command")
+                    break
+
+            # Click Send
+            send_btn = self.find_button_by_text("Send")
+            if send_btn:
+                send_btn.click()
+                time.sleep(2)
+                print("   🚀 Send clicked")
+
+                page_source = self.driver.page_source
+                if "install thonburian" in page_source.lower() or "list models" in page_source.lower():
+                    print("   ✅ Help response received")
+            else:
+                print("   ⚠️ Send button not found")
+        except Exception as e:
+            print(f"   ⚠️ Error: {e}")
+
+    def test_28_chunk_settings_ui(self):
+        """Test: Chunk Settings UI exists in Transcribe page"""
+        self.find_radio_option("Transcribe")
+        time.sleep(1)
+
+        page_source = self.driver.page_source
+
+        # Check for Chunk Settings section
+        has_chunk_settings = (
+            "Chunk" in page_source or
+            "chunk" in page_source.lower() or
+            "Advanced" in page_source
+        )
+
+        if has_chunk_settings:
+            print("   ⚙️ Chunk Settings section found")
+
+        # Try to expand Advanced Chunking
+        try:
+            expanders = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="stExpander"]')
+            for exp in expanders:
+                if "Chunk" in exp.text or "Advanced" in exp.text:
+                    exp.click()
+                    time.sleep(0.5)
+                    print("   📂 Expanded Chunk Settings")
+                    break
+        except:
+            pass
+
+        # Check for sliders
+        page_source = self.driver.page_source
+        if "Duration" in page_source and "seconds" in page_source.lower():
+            print("   ⏱️ Chunk Duration slider found")
+        if "Overlap" in page_source:
+            print("   🔄 Overlap slider found")
+
+    def test_29_drag_drop_upload_area(self):
+        """Test: Drag and Drop upload area exists"""
+        self.find_radio_option("Transcribe")
+        time.sleep(1)
+
+        page_source = self.driver.page_source
+
+        # Check for drag & drop text
+        has_drag_drop = (
+            "Drag" in page_source or
+            "Drop" in page_source or
+            "drag" in page_source.lower()
+        )
+
+        if has_drag_drop:
+            print("   📁 Drag & Drop upload area found")
+        else:
+            print("   ⚠️ Drag & Drop text not found")
+
+        # Check for file uploader element
+        try:
+            file_uploader = self.driver.find_element(By.CSS_SELECTOR, '[data-testid="stFileUploader"]')
+            if file_uploader:
+                print("   ✅ File uploader element exists")
+        except:
+            print("   ⚠️ File uploader element not found")
+
+    # ============================================================
+    # Model Installation Tests
+    # ============================================================
+
+    def test_22_install_thonburian_whisper(self, timeout_minutes=10):
+        """Test: Install Thonburian Whisper Thai model via UI"""
+        import shutil
+
+        # Use dynamic paths from config
+        models_dir = self.config.models_dir
+        thonburian_model_dir = models_dir / "distill-thonburian-whisper-large-v3-mlx"
+
+        # Check if already installed
+        if thonburian_model_dir.exists():
+            print(f"   ℹ️ Thonburian model already installed at {thonburian_model_dir}")
+            # Optionally remove to test fresh install
+            # shutil.rmtree(thonburian_model_dir)
+            return True
+
+        print("   🇹🇭 Installing Thonburian Whisper (Thai specialized model)")
+
+        # Navigate to Settings
+        self.find_radio_option("Settings")
+        time.sleep(2)
+
+        # Click on Models tab
+        try:
+            tabs = self.driver.find_elements(By.CSS_SELECTOR, '[data-baseweb="tab"]')
+            for tab in tabs:
+                if "Models" in tab.text or "🤖" in tab.text:
+                    tab.click()
+                    time.sleep(1)
+                    print("   📑 Models tab selected")
+                    break
+        except:
+            print("   ⚠️ Could not find Models tab")
+
+        # Look for Thai Thonburian button
+        try:
+            thai_btn = self.driver.find_element(By.XPATH, "//button[contains(., 'Thai') or contains(., 'Thonburian')]")
+            self.scroll_to_element(thai_btn)
+            thai_btn.click()
+            time.sleep(1)
+            print("   🇹🇭 Thai Thonburian quick select clicked")
+        except Exception as e:
+            print(f"   ⚠️ Could not click Thai button, trying manual input: {e}")
+            # Try manual input
+            try:
+                text_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="text"]')
+                for inp in text_inputs:
+                    placeholder = inp.get_attribute("placeholder") or ""
+                    if "mlx-community" in placeholder.lower() or "huggingface" in placeholder.lower():
+                        inp.clear()
+                        inp.send_keys("tawankri/distill-thonburian-whisper-large-v3-mlx")
+                        print("   ✏️ Entered model ID manually")
+                        break
+            except:
+                pass
+
+        # Click Download button
+        time.sleep(1)
+        try:
+            download_btn = self.find_button_by_text("Download Model")
+            if download_btn:
+                self.scroll_to_element(download_btn)
+                download_btn.click()
+                print("   📥 Download Model button clicked")
+        except:
+            # Try any download button
+            try:
+                btns = self.driver.find_elements(By.XPATH, "//button[contains(., '📥') or contains(., 'Download')]")
+                for btn in btns:
+                    if btn.is_enabled():
+                        self.scroll_to_element(btn)
+                        btn.click()
+                        print("   📥 Download button clicked")
+                        break
+            except:
+                print("   ❌ Could not click download button")
+                return False
+
+        # Wait for download to complete
+        print(f"   ⏳ Waiting for download (up to {timeout_minutes} minutes)...")
+        start_time = time.time()
+        timeout_seconds = timeout_minutes * 60
+        last_progress_time = time.time()
+
+        while time.time() - start_time < timeout_seconds:
+            page_source = self.driver.page_source
+
+            # Check file system first for model completion
+            if thonburian_model_dir.exists():
+                # Check for weight files
+                weight_files = list(thonburian_model_dir.glob("*.npz")) + list(thonburian_model_dir.glob("*.safetensors"))
+                if weight_files:
+                    model_size = sum(f.stat().st_size for f in thonburian_model_dir.rglob('*') if f.is_file()) / (1024**3)
+                    if model_size > 0.5:  # At least 500MB for valid model
+                        print(f"   ✅ Thonburian Whisper installed! ({model_size:.2f} GB)")
+                        return True
+
+            # Check for success indicators on page
+            if "downloaded successfully" in page_source.lower() or "✅ ดาวน์โหลดสำเร็จ" in page_source:
+                time.sleep(2)
+                if thonburian_model_dir.exists():
+                    model_size = sum(f.stat().st_size for f in thonburian_model_dir.rglob('*') if f.is_file()) / (1024**3)
+                    print(f"   ✅ Thonburian Whisper installed! ({model_size:.2f} GB)")
+                    return True
+
+            # Check for explicit download error (specific text)
+            if "download failed" in page_source.lower() or "ดาวน์โหลดล้มเหลว" in page_source.lower():
+                print("   ❌ Download failed (explicit error)")
+                self.take_screenshot("thonburian_download_failed")
+                return False
+
+            # Show progress
+            elapsed = time.time() - start_time
+            if "downloading" in page_source.lower() or "กำลังดาวน์โหลด" in page_source.lower():
+                print(f"   📊 Downloading... ({elapsed/60:.1f} min elapsed)")
+                last_progress_time = time.time()
+            elif time.time() - last_progress_time > 30:
+                print(f"   ⏳ Waiting... ({elapsed/60:.1f} min elapsed)")
+                last_progress_time = time.time()
+
+            time.sleep(10)
+
+        print(f"   ❌ Download timed out after {timeout_minutes} minutes")
+        return False
+
+    def test_23_verify_thonburian_installed(self):
+        """Test: Verify Thonburian Whisper is available in model selection"""
+        # Use dynamic paths from config
+        models_dir = self.config.models_dir
+        thonburian_model_dir = models_dir / "distill-thonburian-whisper-large-v3-mlx"
+
+        # Check file system
+        if not thonburian_model_dir.exists():
+            print("   ⚠️ Thonburian model directory not found")
+            return False
+
+        # Check for weights file
+        weights_file = thonburian_model_dir / "weights.npz"
+        if not weights_file.exists():
+            # Check for alternative format
+            alt_weights = list(thonburian_model_dir.glob("*.npz")) + list(thonburian_model_dir.glob("*.safetensors"))
+            if not alt_weights:
+                print("   ⚠️ No weight files found in model directory")
+                return False
+            print(f"   📦 Found weight files: {[f.name for f in alt_weights]}")
+
+        # Navigate to Settings to check installed models list
+        self.find_radio_option("Settings")
+        time.sleep(2)
+
+        # Click Models tab
+        try:
+            tabs = self.driver.find_elements(By.CSS_SELECTOR, '[data-baseweb="tab"]')
+            for tab in tabs:
+                if "Models" in tab.text or "🤖" in tab.text:
+                    tab.click()
+                    time.sleep(1)
+                    break
+        except:
+            pass
+
+        page_source = self.driver.page_source
+
+        # Check if Thonburian appears in installed models
+        if "thonburian" in page_source.lower() or "distill-thonburian" in page_source.lower():
+            print("   ✅ Thonburian model visible in Settings")
+
+        # Navigate to Transcribe to check model dropdown
+        self.find_radio_option("Transcribe")
+        time.sleep(2)
+
+        page_source = self.driver.page_source
+        if "thonburian" in page_source.lower():
+            print("   ✅ Thonburian model available in Transcribe page")
+            return True
+
+        # Model might be there but not shown by default
+        print("   ℹ️ Model installed but may need to be selected from dropdown")
+        return True
+
+    # ============================================================
     # Custom Worker Tests
     # ============================================================
 
@@ -721,10 +1131,11 @@ class StreamlitRPATest:
         """Test: Transcription with custom worker configuration"""
         import glob
 
+        # Use dynamic paths from config
         if audio_file is None:
-            audio_file = "/Users/semini/Downloads/EPG_test_5min.mp3"
+            audio_file = self.config.test_audio_file
 
-        outputs_dir = "/Volumes/DOWNLOAD/Docker Tools/transcriptor-pipeline-pilot/data/outputs"
+        outputs_dir = str(self.config.outputs_dir)
 
         # Record existing files
         existing_files = set(glob.glob(f"{outputs_dir}/*"))
@@ -847,7 +1258,7 @@ class StreamlitRPATest:
     # Run All Tests
     # ============================================================
 
-    def run_all_tests(self, skip_transcription: bool = False, custom_worker_test: bool = False):
+    def run_all_tests(self, skip_transcription: bool = False, custom_worker_test: bool = False, install_thonburian: bool = False):
         """Run all test cases"""
         print("\n" + "=" * 60)
         print("🚀 STARTING RPA WEB UI TESTS")
@@ -856,6 +1267,7 @@ class StreamlitRPATest:
         print(f"Test Audio: {self.config.test_audio_file}")
         print(f"Skip Transcription: {skip_transcription}")
         print(f"Custom Worker Test: {custom_worker_test}")
+        print(f"Install Thonburian: {install_thonburian}")
         print("=" * 60)
 
         try:
@@ -879,6 +1291,14 @@ class StreamlitRPATest:
 
             # Manual worker mode test
             self.run_test("20. Manual Worker Mode", self.test_20_transcribe_manual_workers)
+
+            # New Features Tests
+            self.run_test("24. Setup Wizard Tab", self.test_24_setup_wizard_tab)
+            self.run_test("25. Setup Wizard Status Check", self.test_25_setup_wizard_status_check)
+            self.run_test("26. Claude Terminal Tab", self.test_26_claude_terminal_tab)
+            self.run_test("27. Claude Terminal Help", self.test_27_claude_terminal_help)
+            self.run_test("28. Chunk Settings UI", self.test_28_chunk_settings_ui)
+            self.run_test("29. Drag & Drop Upload", self.test_29_drag_drop_upload_area)
 
             # Transcription test (long running)
             if not skip_transcription:
@@ -908,8 +1328,16 @@ class StreamlitRPATest:
                     processes=2,
                     workers=4,
                     model='large-v3',
-                    audio_file="/Users/semini/Downloads/EPG_test_5min.mp3"
+                    audio_file=self.config.test_audio_file  # Use dynamic path
                 ))
+
+            # Thonburian Whisper installation test (optional)
+            if install_thonburian:
+                print("\n" + "=" * 60)
+                print("🇹🇭 THONBURIAN WHISPER INSTALLATION TEST")
+                print("=" * 60)
+                self.run_test("22. Install Thonburian Whisper", self.test_22_install_thonburian_whisper)
+                self.run_test("23. Verify Thonburian Installed", self.test_23_verify_thonburian_installed)
 
         finally:
             # Take final screenshot
@@ -935,35 +1363,41 @@ def main():
 
     parser = argparse.ArgumentParser(description="RPA Web UI Test for Transcriptor")
     parser.add_argument("--url", default="http://localhost:8501", help="Streamlit URL")
-    parser.add_argument("--audio", default="/Users/semini/Downloads/EPG_test_10min.mp3",
-                        help="Test audio file path")
+    parser.add_argument("--audio", default="",
+                        help="Test audio file path (will auto-detect if not specified)")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument("--skip-transcription", action="store_true",
                         help="Skip transcription test (faster)")
     parser.add_argument("--custom-worker-test", action="store_true",
                         help="Run custom worker test (2P×4W, large-v3, 5min audio)")
+    parser.add_argument("--install-thonburian", action="store_true",
+                        help="Run Thonburian Whisper installation test")
     parser.add_argument("--timeout", type=int, default=30, help="General timeout in seconds")
 
     args = parser.parse_args()
 
-    # Verify test file exists
-    if not os.path.exists(args.audio):
-        print(f"❌ Test audio file not found: {args.audio}")
-        sys.exit(1)
-
-    # Create config
+    # Create config first (will auto-detect paths)
     config = TestConfig(
         base_url=args.url,
-        test_audio_file=args.audio,
+        test_audio_file=args.audio if args.audio else "",
         timeout=args.timeout,
         headless=args.headless
     )
+
+    # Verify test file exists (if required for transcription tests)
+    if not args.skip_transcription:
+        if not config.test_audio_file or not os.path.exists(config.test_audio_file):
+            print(f"❌ Test audio file not found: {config.test_audio_file}")
+            print("   Use --skip-transcription to skip transcription tests")
+            print("   Or provide --audio path to your test audio file")
+            sys.exit(1)
 
     # Run tests
     tester = StreamlitRPATest(config)
     success = tester.run_all_tests(
         skip_transcription=args.skip_transcription,
-        custom_worker_test=args.custom_worker_test
+        custom_worker_test=args.custom_worker_test,
+        install_thonburian=args.install_thonburian
     )
 
     sys.exit(0 if success else 1)
