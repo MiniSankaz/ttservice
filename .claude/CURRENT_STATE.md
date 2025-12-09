@@ -1,74 +1,67 @@
 # CURRENT_STATE.md - Session State Tracker
 
-> **Last Updated:** 2025-12-09 20:30 (ICT)
+> **Last Updated:** 2025-12-09 21:00 (ICT)
 > **Last Machine:** macOS Darwin 24.6.0
-> **Last Commit:** 2a73f5b
+> **Last Commit:** e20bce4
+> **Branch:** main
 
 ## Current Status: STABLE
 
 All features working, 29/29 RPA tests passing.
+Resume conversation system fully implemented with auto-save hooks.
 
-## Recent Changes (This Session)
+## Recent Session (2025-12-09)
 
-### Completed Today
+### Completed
 1. **Modular lib/ Architecture**
-   - Extracted reusable code from web_app.py
-   - Created 8 new modules in lib/
-   - Full dependency documentation in each file
+   - Extracted reusable code from web_app.py to lib/
+   - Created 8 modules with dependency documentation
 
 2. **Setup Wizard & Claude Terminal**
-   - One-click system setup
-   - AI-assisted model installation
-   - System status checking
+   - One-click system setup in Settings
+   - AI-assisted model installation commands
 
 3. **UI Enhancements**
    - Drag & Drop file upload styling
-   - Chunk duration/overlap configuration
-   - Multi-process progress averaging
+   - Chunk duration/overlap configuration (15-25s)
+   - Multi-process progress averaging with speed display
 
 4. **Testing**
    - Added 6 new RPA tests (24-29)
    - Fixed all hardcoded paths
-   - 100% pass rate
+   - 100% pass rate (29/29)
 
 5. **Documentation**
    - Created CLAUDE.md
    - Created .claude/ resume system
 
+6. **Resume Conversation System**
+   - Created .claude/scripts/resume.sh
+   - Created .claude/scripts/save_session.sh
+   - Created .claude/scripts/install_hooks.sh
+   - Git hooks for auto-save on push
+
 ## Pending Tasks
 
 None currently. Project is in stable state.
 
-## Known Working Features
+## Git Log (Recent)
 
-| Feature | Status | Last Tested |
-|---------|--------|-------------|
-| File Upload | OK | 2025-12-09 |
-| Model Selection | OK | 2025-12-09 |
-| Transcription (Medium) | OK | 2025-12-09 |
-| Transcription (Thonburian) | OK | 2025-12-09 |
-| History View | OK | 2025-12-09 |
-| Export (TXT/JSON/SRT) | OK | 2025-12-09 |
-| Setup Wizard | OK | 2025-12-09 |
-| Claude Terminal | OK | 2025-12-09 |
-| Chunk Settings | OK | 2025-12-09 |
-
-## Active Development Notes
-
-### Next Potential Features
-- [ ] Batch file processing
-- [ ] WebSocket progress updates
-- [ ] Speaker diarization
-- [ ] Cloud storage integration
-
-### Performance Benchmarks (Reference)
-- 5 min audio: ~30s transcription
-- 74 min audio: ~23 min transcription (3.2x realtime)
-- Memory: ~0.5-2GB depending on model
+```
+e20bce4 feat: Add .claude/ portable resume conversation system
+2a73f5b feat: Add modular lib architecture, Setup Wizard, Claude Terminal
+f218c56 Add enhanced History UI features and RPA test suite
+70626b1 Add Streamlit Web UI with SQLite database
+eb74292 Initial commit: Transcriptor Pipeline Pilot v1.0.0
+```
 
 ## Quick Resume Commands
 
 ```bash
+# On new machine (after clone)
+./.claude/scripts/install_hooks.sh  # One-time setup
+./.claude/scripts/resume.sh         # View state
+
 # Start server
 ./setup.sh --start
 
@@ -79,43 +72,20 @@ python tests/rpa_web_test.py
 ./setup.sh --status
 ```
 
-## Files Modified Recently
+## How to Continue
 
-```
-2025-12-09:
-  - web_app.py (progress, drag-drop, chunk settings, wizard, terminal)
-  - lib/* (all new)
-  - tests/rpa_web_test.py (new tests, dynamic paths)
-  - setup.sh (improved)
-  - CLAUDE.md (new)
-  - .claude/* (new)
-```
+1. **Run `./.claude/scripts/resume.sh`** to see current state
+2. **Start Claude Code**: `claude`
+3. **Say**: "อ่าน .claude/ แล้วทำงานต่อ"
+4. **Ask user** what they want to work on next
 
-## Environment Notes
+## Next Potential Features
 
-### Required for Development
-- macOS with Apple Silicon (M1/M2/M3/M4)
-- Python 3.10+
-- FFmpeg installed
-- Chrome (for RPA tests)
-
-### Installed Models (Current Machine)
-- whisper-medium-mlx
-- distill-thonburian-whisper-large-v3-mlx
+- [ ] Batch file processing
+- [ ] WebSocket progress updates
+- [ ] Speaker diarization
+- [ ] Cloud storage integration
 
 ---
 
-## How to Continue
-
-1. **Read this file** to understand current state
-2. **Check pending tasks** above
-3. **Run `./setup.sh --status`** to verify environment
-4. **Ask user** what they want to work on next
-
-## Session End Checklist
-
-Before ending a session, update this file with:
-- [ ] What was completed
-- [ ] What is pending
-- [ ] Any issues encountered
-- [ ] Commit and push to Git
+*Updated by session save script*
