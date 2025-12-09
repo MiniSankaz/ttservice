@@ -2,6 +2,30 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+## Resume Conversation System
+
+**IMPORTANT:** This project uses a portable context system in `.claude/` directory.
+
+When starting a new Claude Code session on ANY machine:
+```
+Say: "อ่าน .claude/ แล้วทำงานต่อ" or "Resume from .claude/"
+```
+
+### Context Files
+| File | Purpose |
+|------|---------|
+| `.claude/PROJECT_CONTEXT.md` | Static project knowledge (architecture, decisions) |
+| `.claude/CURRENT_STATE.md` | Current work state (pending tasks, recent changes) |
+| `.claude/DECISIONS.md` | Technical decision log with rationale |
+| `.claude/KNOWN_ISSUES.md` | Known bugs and workarounds |
+
+### Before Ending Session
+```
+Say: "อัพเดต .claude/ และ commit" to save your session state
+```
+
+---
+
 ## Project Overview
 
 **Transcriptor Pipeline Pilot** is a Streamlit-based web application for transcribing Thai audio using MLX Whisper on Apple Silicon (M1/M2/M3/M4). Features multi-process parallel transcription with real-time progress tracking.
