@@ -120,6 +120,73 @@ lib/
 
 ---
 
+### DEC-009: Centralized Process Manager
+**Date:** 2025-12-11
+**Context:** Need robust process lifecycle management for transcription jobs
+**Decision:** Create `lib/process_manager.py` as singleton with heartbeat monitoring
+**Rationale:**
+- Centralized subprocess tracking by job_id
+- Heartbeat thread detects orphaned processes (every 5s)
+- Log capture (file + in-memory) for debugging
+- Graceful shutdown (SIGTERM → SIGKILL fallback)
+- Database integration for persistence
+**Implementation:**
+- Singleton pattern for global instance
+- Thread-safe operations with locks
+- Logs stored in `logs/jobs/job_{id}_{timestamp}.log`
+- Database columns: pid, heartbeat, log_file
+**Trade-off:** Slightly more complex than simple subprocess.run(), but much more reliable
+
+---
+
+### DEC-010: Real Claude Code CLI Integration
+**Date:** 2025-12-11
+**Context:** Claude Terminal used keyword matching (fake responses)
+**Decision:** Integrate real Claude Code CLI via `subprocess.Popen(['claude', ...])`
+**Rationale:**
+- Actual AI assistance instead of hardcoded responses
+- Context-aware command execution
+- Live streaming output in web UI
+- Consistent with Claude Code's design
+**Implementation:** `lib/pages/settings.py` - Claude Terminal tab
+**Trade-off:** Requires Claude CLI installed, but provides real value
+
+---
+
+### DEC-011: Database Schema Extension for Process Tracking
+**Date:** 2025-12-11
+**Context:** Need to track process state across restarts
+**Decision:** Add pid, heartbeat, log_file columns to transcription_jobs
+**Rationale:**
+- PID tracking enables kill/stop operations
+- Heartbeat detects stale/orphaned jobs
+- Log file path for retrieval after completion
+- Auto-migration for existing databases
+**Implementation:**
+- `ALTER TABLE` with try/except for backwards compatibility
+- New functions: update_heartbeat, get_orphaned_jobs, cancel_job
+- Indexes on pid and heartbeat for fast queries
+**Trade-off:** None - backwards compatible migration
+
+---
+
+### DEC-012: Job Cancellation Feature
+**Date:** 2025-12-11
+**Context:** Users need ability to stop long-running transcriptions
+**Decision:** Add Stop/Cancel button in History UI with ProcessManager integration
+**Rationale:**
+- User control over resource usage
+- Graceful termination prevents data corruption
+- Updates job status to 'cancelled' in database
+- Cleans up process from tracking
+**Implementation:**
+- Button shows for 'processing' jobs only
+- Calls `ProcessManager.stop_process(job_id)`
+- UI updates via rerun after cancellation
+**Trade-off:** None - essential feature
+
+---
+
 ## Decision Template
 
 ```markdown

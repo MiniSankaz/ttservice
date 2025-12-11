@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT.md - Static Project Knowledge
 
-> Last Updated: 2025-12-09
+> Last Updated: 2025-12-11
 > This file contains stable project information that rarely changes.
 
 ## Project Identity
@@ -23,6 +23,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    lib/ Module Layer                         │
 │  config.py │ system.py │ audio.py │ models.py │ ui_*.py    │
+│              process_manager.py (NEW - Process Lifecycle)    │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
@@ -30,11 +31,14 @@
 │  HybridMLXTranscriber (2 Processes × N Workers)             │
 │  ├── Process 1: MLX Model + ThreadPool                      │
 │  └── Process 2: MLX Model + ThreadPool                      │
+│                   ↓                                          │
+│          ProcessManager (Heartbeat, Logs, Cleanup)           │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                   Data Layer                                 │
-│  SQLite (history) │ Models Dir │ Uploads │ Outputs          │
+│  SQLite (history + pid/heartbeat/logs) │ Models │ Uploads   │
+│                   Job Logs (logs/jobs/)                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,15 +73,17 @@ See: `app/services/mlx_hybrid/smart_chunking.py`
 | `lib/audio.py` | Transcription wrapper, subprocess management |
 | `lib/models.py` | Model listing, download, delete |
 | `lib/ui_components.py` | CSS, formatters, UI helpers |
-| `lib/pages/settings.py` | Setup Wizard, Claude Terminal |
+| `lib/pages/settings.py` | Setup Wizard, Claude Terminal (real CLI integration) |
+| `lib/process_manager.py` | Process lifecycle, heartbeat, logs, cleanup (NEW) |
 
 ## Critical Files
 
 | File | Impact | Notes |
 |------|--------|-------|
-| `web_app.py` | Main entry | All UI logic |
+| `web_app.py` | Main entry | All UI logic, job management |
 | `lib/config.py` | All modules | Path configuration |
-| `app/database.py` | History/Stats | SQLite operations |
+| `lib/process_manager.py` | Process control | Singleton, heartbeat thread |
+| `app/database.py` | History/Stats | SQLite operations, pid/heartbeat tracking |
 | `app/services/mlx_hybrid/transcription_hybrid.py` | Core | Transcription engine |
 
 ## Standard Models
@@ -95,8 +101,9 @@ See: `app/services/mlx_hybrid/smart_chunking.py`
 
 - **RPA Tests:** Selenium WebDriver automation
 - **Test File:** `tests/rpa_web_test.py`
-- **Coverage:** 29 tests, 100% pass rate
+- **Coverage:** 37 tests, 100% pass rate
 - **Requires:** Running Streamlit server on port 8501
+- **New Tests (30-37):** Process management, live logs, job cancellation, database migrations
 
 ## Environment Setup
 
