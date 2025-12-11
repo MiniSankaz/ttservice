@@ -60,9 +60,26 @@ def init_database():
                 error_message TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
-                completed_at TIMESTAMP
+                completed_at TIMESTAMP,
+                pid INTEGER,
+                heartbeat TIMESTAMP,
+                log_file TEXT
             )
         ''')
+
+        # Migration: Add new columns if they don't exist (for existing databases)
+        try:
+            cursor.execute('ALTER TABLE transcription_jobs ADD COLUMN pid INTEGER')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            cursor.execute('ALTER TABLE transcription_jobs ADD COLUMN heartbeat TIMESTAMP')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('ALTER TABLE transcription_jobs ADD COLUMN log_file TEXT')
+        except sqlite3.OperationalError:
+            pass
 
         # Settings table
         cursor.execute('''
@@ -89,6 +106,8 @@ def init_database():
         # Create indexes
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_status ON transcription_jobs(status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_created ON transcription_jobs(created_at DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_pid ON transcription_jobs(pid)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_heartbeat ON transcription_jobs(heartbeat)')
 
         conn.commit()
 
@@ -118,7 +137,9 @@ def update_job_status(
     job_id: int,
     status: str,
     progress: float = None,
-    error_message: str = None
+    error_message: str = None,
+    pid: int = None,
+    log_file: str = None
 ):
     """Update job status."""
     with get_connection() as conn:
@@ -135,10 +156,20 @@ def update_job_status(
             updates.append('error_message = ?')
             params.append(error_message)
 
+        if pid is not None:
+            updates.append('pid = ?')
+            params.append(pid)
+
+        if log_file is not None:
+            updates.append('log_file = ?')
+            params.append(log_file)
+
         if status == 'processing':
             updates.append('started_at = CURRENT_TIMESTAMP')
-        elif status in ['completed', 'failed']:
+            updates.append('heartbeat = CURRENT_TIMESTAMP')
+        elif status in ['completed', 'failed', 'cancelled']:
             updates.append('completed_at = CURRENT_TIMESTAMP')
+            updates.append('pid = NULL')
 
         params.append(job_id)
 
@@ -234,6 +265,86 @@ def clear_all_jobs():
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM transcription_jobs')
+
+
+# ==================== Process Management ====================
+
+def update_heartbeat(job_id: int):
+    """Update job heartbeat timestamp."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE transcription_jobs
+            SET heartbeat = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (job_id,))
+
+
+def get_active_jobs() -> List[Dict]:
+    """Get all active (processing) jobs with PID."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM transcription_jobs
+            WHERE status = 'processing' AND pid IS NOT NULL
+            ORDER BY started_at DESC
+        ''')
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_orphaned_jobs(timeout_seconds: int = 60) -> List[Dict]:
+    """Get jobs that appear to be orphaned (no heartbeat update)."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM transcription_jobs
+            WHERE status = 'processing'
+            AND (
+                heartbeat IS NULL
+                OR datetime(heartbeat) < datetime('now', ? || ' seconds')
+            )
+        ''', (f'-{timeout_seconds}',))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def cancel_job(job_id: int, reason: str = 'Cancelled by user'):
+    """Mark job as cancelled."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE transcription_jobs
+            SET status = 'cancelled',
+                error_message = ?,
+                completed_at = CURRENT_TIMESTAMP,
+                pid = NULL
+            WHERE id = ?
+        ''', (reason, job_id))
+
+
+def get_job_log_file(job_id: int) -> Optional[str]:
+    """Get log file path for a job."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT log_file FROM transcription_jobs WHERE id = ?', (job_id,))
+        row = cursor.fetchone()
+        return row['log_file'] if row else None
+
+
+def cleanup_stale_jobs():
+    """Mark stale processing jobs as failed."""
+    orphaned = get_orphaned_jobs(timeout_seconds=120)  # 2 minutes timeout
+    for job in orphaned:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE transcription_jobs
+                SET status = 'failed',
+                    error_message = 'Process terminated unexpectedly (no heartbeat)',
+                    completed_at = CURRENT_TIMESTAMP,
+                    pid = NULL
+                WHERE id = ?
+            ''', (job['id'],))
+    return len(orphaned)
 
 
 # ==================== Statistics ====================

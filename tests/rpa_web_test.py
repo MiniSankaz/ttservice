@@ -941,6 +941,189 @@ class StreamlitRPATest:
             print("   ⚠️ File uploader element not found")
 
     # ============================================================
+    # Process Management Tests (NEW)
+    # ============================================================
+
+    def test_30_history_cleanup_button(self):
+        """Test: History page has Cleanup Stale button"""
+        self.find_radio_option("History")
+        time.sleep(1)
+
+        page_source = self.driver.page_source
+
+        # Check for cleanup button
+        has_cleanup = (
+            "Cleanup" in page_source or
+            "cleanup" in page_source.lower() or
+            "🧹" in page_source
+        )
+
+        if has_cleanup:
+            print("   🧹 Cleanup Stale button found")
+        else:
+            print("   ⚠️ Cleanup button not found (may be in different location)")
+
+        # Check for cancelled status in filter options
+        if "cancelled" in page_source.lower():
+            print("   🛑 Cancelled status filter available")
+
+    def test_31_history_stop_button(self):
+        """Test: Stop button appears for processing jobs"""
+        self.find_radio_option("History")
+        time.sleep(1)
+
+        page_source = self.driver.page_source
+
+        # Check if any processing jobs exist
+        if "processing" in page_source.lower() or "⏳" in page_source:
+            # Look for stop button
+            try:
+                stop_btns = self.driver.find_elements(By.XPATH, "//button[contains(., '🛑')]")
+                if stop_btns:
+                    print("   🛑 Stop button found for processing jobs")
+                else:
+                    print("   ℹ️ No stop buttons visible (no processing jobs)")
+            except:
+                print("   ℹ️ No processing jobs currently")
+        else:
+            print("   ℹ️ No processing jobs in history")
+
+    def test_32_job_details_live_logs(self):
+        """Test: Job details page shows live logs for processing jobs"""
+        self.find_radio_option("History")
+        time.sleep(1)
+
+        # Find a job with any status and click View
+        try:
+            view_btns = self.driver.find_elements(By.XPATH, "//button[contains(., 'View') or contains(., '👁️')]")
+            if view_btns:
+                view_btns[0].click()
+                time.sleep(2)
+
+                page_source = self.driver.page_source
+
+                # Check for job details elements
+                if "Back" in page_source:
+                    print("   👁️ Job details page opened")
+
+                    # Check for live log section (for processing jobs)
+                    if "Live Logs" in page_source or "📋" in page_source:
+                        print("   📋 Live Logs section found")
+
+                    # Check for PID display
+                    if "PID" in page_source or "pid" in page_source.lower():
+                        print("   🔧 PID display found")
+
+                    # Check for Stop button on processing job
+                    if "Stop Job" in page_source or "🛑" in page_source:
+                        print("   🛑 Stop Job button found")
+
+                    # Return to history
+                    back_btn = self.find_button_by_text("Back", timeout=5)
+                    if back_btn:
+                        back_btn.click()
+                        time.sleep(1)
+            else:
+                print("   ℹ️ No jobs to view")
+        except Exception as e:
+            print(f"   ⚠️ Error viewing job details: {e}")
+
+    def test_33_cancelled_job_view(self):
+        """Test: Cancelled jobs display correctly"""
+        self.find_radio_option("History")
+        time.sleep(1)
+
+        page_source = self.driver.page_source
+
+        # Check for cancelled status icon
+        if "🛑" in page_source:
+            print("   🛑 Cancelled status icon visible")
+
+        # Try to filter by cancelled
+        try:
+            # Find filter dropdown
+            selects = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="stSelectbox"]')
+            if selects:
+                selects[0].click()
+                time.sleep(0.5)
+
+                # Look for cancelled option
+                options = self.driver.find_elements(By.XPATH, "//div[contains(text(), 'cancelled')]")
+                if options:
+                    options[0].click()
+                    time.sleep(1)
+                    print("   🛑 Cancelled filter applied")
+                else:
+                    # Click away to close dropdown
+                    self.driver.find_element(By.TAG_NAME, "body").click()
+        except:
+            print("   ℹ️ Filter test skipped")
+
+    def test_34_job_log_file_exists(self):
+        """Test: Verify log files are created for jobs"""
+        from pathlib import Path
+
+        logs_dir = self.config.project_root / "logs" / "jobs"
+
+        if logs_dir.exists():
+            log_files = list(logs_dir.glob("job_*.log"))
+            if log_files:
+                print(f"   📄 Found {len(log_files)} job log files")
+                # Check most recent log file
+                newest_log = max(log_files, key=lambda p: p.stat().st_mtime)
+                size_kb = newest_log.stat().st_size / 1024
+                print(f"   📄 Newest: {newest_log.name} ({size_kb:.1f} KB)")
+            else:
+                print("   ℹ️ No job log files yet (run a transcription first)")
+        else:
+            print("   ℹ️ Logs directory not created yet")
+
+    def test_35_process_manager_import(self):
+        """Test: ProcessManager module imports correctly"""
+        try:
+            import sys
+            sys.path.insert(0, str(self.config.project_root))
+            from lib.process_manager import get_process_manager, ProcessManager
+
+            pm = get_process_manager()
+            print(f"   ✅ ProcessManager imported successfully")
+            print(f"   🔧 Initialized: {pm._initialized}")
+
+            # Check running processes
+            running = pm.get_all_running()
+            print(f"   📊 Running processes: {len(running)}")
+
+        except Exception as e:
+            print(f"   ❌ ProcessManager import failed: {e}")
+            raise
+
+    def test_36_database_new_columns(self):
+        """Test: Database has new columns for process tracking"""
+        try:
+            import sys
+            sys.path.insert(0, str(self.config.project_root))
+            from app.database import get_connection
+
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(transcription_jobs)")
+                columns = {row[1] for row in cursor.fetchall()}
+
+                required_columns = {'pid', 'heartbeat', 'log_file'}
+                found_columns = required_columns & columns
+
+                if found_columns == required_columns:
+                    print(f"   ✅ All new columns found: {required_columns}")
+                else:
+                    missing = required_columns - found_columns
+                    print(f"   ❌ Missing columns: {missing}")
+                    raise AssertionError(f"Missing columns: {missing}")
+
+        except Exception as e:
+            print(f"   ❌ Database check failed: {e}")
+            raise
+
+    # ============================================================
     # Model Installation Tests
     # ============================================================
 
@@ -1299,6 +1482,15 @@ class StreamlitRPATest:
             self.run_test("27. Claude Terminal Help", self.test_27_claude_terminal_help)
             self.run_test("28. Chunk Settings UI", self.test_28_chunk_settings_ui)
             self.run_test("29. Drag & Drop Upload", self.test_29_drag_drop_upload_area)
+
+            # Process Management Tests (NEW)
+            self.run_test("30. History Cleanup Button", self.test_30_history_cleanup_button)
+            self.run_test("31. History Stop Button", self.test_31_history_stop_button)
+            self.run_test("32. Job Details Live Logs", self.test_32_job_details_live_logs)
+            self.run_test("33. Cancelled Job View", self.test_33_cancelled_job_view)
+            self.run_test("34. Job Log File Exists", self.test_34_job_log_file_exists)
+            self.run_test("35. ProcessManager Import", self.test_35_process_manager_import)
+            self.run_test("36. Database New Columns", self.test_36_database_new_columns)
 
             # Transcription test (long running)
             if not skip_transcription:

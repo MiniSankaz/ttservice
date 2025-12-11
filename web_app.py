@@ -133,9 +133,11 @@ def run_transcription(
     workers: int,
     progress_callback=None,
     chunk_duration: int = 20,
-    overlap_duration: int = 3
+    overlap_duration: int = 3,
+    job_id: int = None
 ) -> Dict:
     """Run transcription and return result."""
+    from lib.process_manager import get_process_manager
 
     script_path = PROJECT_ROOT / "scripts" / "transcribe_pipeline.py"
 
@@ -153,25 +155,56 @@ def run_transcription(
     ]
 
     start_time = time.time()
+    pm = get_process_manager()
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
+    # Use ProcessManager if job_id provided
+    if job_id:
+        process = pm.start_process(
+            job_id=job_id,
+            cmd=cmd,
+            progress_callback=progress_callback
+        )
 
-    logs = []
-    for line in process.stdout:
-        logs.append(line.strip())
-        if progress_callback:
-            progress_callback(line.strip())
+        # Wait for process to complete
+        logs = []
+        while process.poll() is None:
+            # Check for cancellation via session state
+            if 'cancel_job' in st.session_state and st.session_state.cancel_job == job_id:
+                pm.stop_process(job_id)
+                st.session_state.cancel_job = None
+                return {
+                    'success': False,
+                    'elapsed_seconds': time.time() - start_time,
+                    'logs': pm.get_logs(job_id),
+                    'cancelled': True
+                }
 
-    process.wait()
-    elapsed = time.time() - start_time
+            # Get logs from process manager
+            time.sleep(0.5)
 
-    success = process.returncode == 0
+        logs = pm.get_logs(job_id)
+        elapsed = time.time() - start_time
+        success = process.returncode == 0
+
+    else:
+        # Fallback to original behavior
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+
+        logs = []
+        for line in process.stdout:
+            logs.append(line.strip())
+            if progress_callback:
+                progress_callback(line.strip())
+
+        process.wait()
+        elapsed = time.time() - start_time
+        success = process.returncode == 0
 
     return {
         'success': success,
@@ -346,7 +379,7 @@ def show_transcribe_page():
             workers = auto_workers
             st.info(f"Auto: {processes} proc × {workers} workers")
         else:
-            processes = st.number_input("Processes", min_value=1, max_value=4, value=2)
+            processes = st.number_input("Processes", min_value=1, max_value=8, value=2)
             workers = st.number_input("Workers/Process", min_value=4, max_value=16, value=8)
 
     # Chunk duration config (outside col2 to be accessible later)
@@ -536,7 +569,7 @@ def show_transcribe_page():
                         progress_bar.progress(100)
                         status_text.markdown("✅ **Completed!**")
 
-                # Run transcription
+                # Run transcription with process tracking
                 start_time = time.time()
                 result = run_transcription(
                     str(temp_input),
@@ -546,7 +579,8 @@ def show_transcribe_page():
                     workers,
                     update_progress,
                     chunk_duration,
-                    overlap_duration
+                    overlap_duration,
+                    job_id=job_id
                 )
                 elapsed = time.time() - start_time
 
@@ -650,13 +684,23 @@ def show_history_page():
         return
 
     # Filter options
-    col1, col2 = st.columns([3, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col2:
         status_filter = st.selectbox(
             "Filter by Status",
-            options=['All', 'completed', 'failed', 'processing', 'pending'],
+            options=['All', 'completed', 'failed', 'processing', 'pending', 'cancelled'],
             index=0
         )
+    with col3:
+        # Cleanup orphaned jobs button
+        if st.button("🧹 Cleanup Stale", help="Clean up orphaned/stale jobs"):
+            from app.database import cleanup_stale_jobs
+            cleaned = cleanup_stale_jobs()
+            if cleaned > 0:
+                st.success(f"Cleaned up {cleaned} stale jobs")
+                st.rerun()
+            else:
+                st.info("No stale jobs found")
 
     if status_filter != 'All':
         jobs = [j for j in jobs if j['status'] == status_filter]
@@ -673,7 +717,8 @@ def show_history_page():
                     'completed': '✅',
                     'failed': '❌',
                     'processing': '⏳',
-                    'pending': '🕐'
+                    'pending': '🕐',
+                    'cancelled': '🛑'
                 }
                 status_icon = status_icons.get(job['status'], '❓')
                 st.markdown(f"**{status_icon} {job['filename']}**")
@@ -688,10 +733,11 @@ def show_history_page():
                 st.metric("Model", job['model'], label_visibility="collapsed")
 
             with col4:
-                if job['status'] == 'completed' and job['speed']:
+                if job['status'] == 'completed' and job.get('speed'):
                     st.metric("Speed", f"{job['speed']:.1f}x", label_visibility="collapsed")
                 elif job['status'] == 'processing':
-                    st.metric("Progress", f"{job['progress']:.0f}%", label_visibility="collapsed")
+                    progress = job.get('progress') or 0
+                    st.metric("Progress", f"{progress:.0f}%", label_visibility="collapsed")
                 else:
                     st.caption(job['status'])
 
@@ -703,10 +749,38 @@ def show_history_page():
                     st.rerun()
 
             with col6:
-                # Delete button
-                if st.button("🗑️", key=f"delete_{job['id']}"):
-                    delete_job(job['id'])
-                    st.rerun()
+                # Stop button for processing jobs
+                if job['status'] == 'processing':
+                    if st.button("🛑", key=f"stop_{job['id']}", help="Stop this job"):
+                        import os
+                        import signal
+                        from app.database import cancel_job
+
+                        # Kill process using PID from database
+                        pid = job.get('pid')
+                        if pid:
+                            try:
+                                os.kill(pid, signal.SIGTERM)
+                                time.sleep(0.5)
+                                # Force kill if still running
+                                try:
+                                    os.kill(pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                            except ProcessLookupError:
+                                pass  # Process already dead
+                            except Exception as e:
+                                st.warning(f"Could not kill process: {e}")
+
+                        cancel_job(job['id'], "Cancelled by user")
+                        st.success(f"Job {job['id']} cancelled")
+                        time.sleep(0.5)
+                        st.rerun()
+                else:
+                    # Delete button
+                    if st.button("🗑️", key=f"delete_{job['id']}"):
+                        delete_job(job['id'])
+                        st.rerun()
 
             st.markdown("---")
 
@@ -761,7 +835,8 @@ def show_job_details(job_id: int):
         'completed': '✅',
         'failed': '❌',
         'processing': '⏳',
-        'pending': '🕐'
+        'pending': '🕐',
+        'cancelled': '🛑'
     }
     status_icon = status_icons.get(job['status'], '❓')
 
@@ -782,9 +857,42 @@ def show_job_details(job_id: int):
 
     st.markdown("---")
 
-    # For processing jobs, show live progress
+    # For processing jobs, show live progress with logs
     if job['status'] == 'processing':
         st.markdown("### ⏳ Processing in Progress")
+
+        # Stop button
+        col_stop, col_info = st.columns([1, 3])
+        with col_stop:
+            if st.button("🛑 Stop Job", type="primary", use_container_width=True):
+                import os
+                import signal
+                from app.database import cancel_job
+
+                # Kill process using PID from database
+                pid = job.get('pid')
+                if pid:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        time.sleep(0.5)
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    except ProcessLookupError:
+                        pass
+                    except Exception as e:
+                        st.warning(f"Could not kill process: {e}")
+
+                cancel_job(job['id'], "Cancelled by user")
+                st.warning("Job cancelled!")
+                time.sleep(1)
+                st.rerun()
+
+        with col_info:
+            # PID info
+            if job.get('pid'):
+                st.caption(f"🔧 PID: {job['pid']}")
 
         # Progress bar
         progress = job.get('progress', 0) or 0
@@ -799,11 +907,35 @@ def show_job_details(job_id: int):
                 remaining = estimated_total - elapsed
                 st.caption(f"⏱️ Elapsed: {elapsed/60:.1f} min | Estimated remaining: {remaining/60:.1f} min")
 
-        # Auto-refresh hint
-        st.info("🔄 This page will auto-refresh to show progress. Click 'Back to History' to return.")
+        # Live log viewer
+        st.markdown("### 📋 Live Logs")
+        from lib.process_manager import get_process_manager
+        pm = get_process_manager()
 
-        # Auto-refresh every 3 seconds
-        time.sleep(3)
+        # Get logs from process manager or log file
+        logs = pm.get_logs(job['id'], last_n=50)
+        if not logs and job.get('log_file'):
+            # Try reading from log file
+            log_file = Path(job['log_file'])
+            if log_file.exists():
+                try:
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                        logs = [line.rstrip('\n') for line in lines[-50:]]
+                except Exception:
+                    pass
+
+        if logs:
+            log_text = '\n'.join(logs)
+            st.code(log_text, language='bash')
+        else:
+            st.info("Waiting for logs...")
+
+        # Auto-refresh hint
+        st.info("🔄 Auto-refresh every 2 seconds. Click 'Back to History' to return.")
+
+        # Auto-refresh every 2 seconds
+        time.sleep(2)
         st.rerun()
         return
 
@@ -820,6 +952,39 @@ def show_job_details(job_id: int):
             st.error(job['error_message'])
         else:
             st.error("Transcription failed. Check logs for details.")
+
+        # Show logs if available
+        if job.get('log_file'):
+            log_file = Path(job['log_file'])
+            if log_file.exists():
+                with st.expander("📋 View Logs"):
+                    try:
+                        with open(log_file, 'r', encoding='utf-8') as f:
+                            log_content = f.read()
+                        st.code(log_content[-5000:] if len(log_content) > 5000 else log_content, language='bash')
+                    except Exception as e:
+                        st.warning(f"Could not read log file: {e}")
+        return
+
+    # For cancelled jobs
+    if job['status'] == 'cancelled':
+        st.markdown("### 🛑 Cancelled")
+        if job.get('error_message'):
+            st.warning(job['error_message'])
+        else:
+            st.warning("This job was cancelled.")
+
+        # Show logs if available
+        if job.get('log_file'):
+            log_file = Path(job['log_file'])
+            if log_file.exists():
+                with st.expander("📋 View Logs"):
+                    try:
+                        with open(log_file, 'r', encoding='utf-8') as f:
+                            log_content = f.read()
+                        st.code(log_content[-5000:] if len(log_content) > 5000 else log_content, language='bash')
+                    except Exception as e:
+                        st.warning(f"Could not read log file: {e}")
         return
 
     # Output files (for completed jobs)
