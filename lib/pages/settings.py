@@ -217,135 +217,239 @@ def show_setup_wizard():
         st.balloons()
 
 
+def find_claude_cli() -> str:
+    """
+    Find Claude Code CLI binary path.
+
+    Returns:
+        Path to claude binary or empty string if not found.
+    """
+    import os
+    import glob
+
+    # Common locations to check
+    possible_paths = [
+        # macOS Claude App installation
+        os.path.expanduser("~/Library/Application Support/Claude/claude-code/*/claude"),
+        # Homebrew
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+        # npm global
+        "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+    ]
+
+    # Check each possible path
+    for pattern in possible_paths:
+        matches = glob.glob(pattern)
+        if matches:
+            # Sort to get latest version if multiple exist
+            matches.sort(reverse=True)
+            if os.path.isfile(matches[0]) and os.access(matches[0], os.X_OK):
+                return matches[0]
+
+    # Try which command
+    try:
+        result = subprocess.run(['which', 'claude'], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+
+    return ""
+
+
+def run_claude_cli(prompt: str, timeout: int = 120) -> dict:
+    """
+    Run Claude Code CLI with a prompt and return the response.
+
+    Args:
+        prompt: The prompt to send to Claude
+        timeout: Timeout in seconds (default 120)
+
+    Returns:
+        dict with 'success', 'output', and 'error' keys
+    """
+    claude_path = find_claude_cli()
+
+    if not claude_path:
+        return {
+            'success': False,
+            'output': '',
+            'error': 'Claude CLI not found. Please install Claude Code from https://claude.ai/claude-code'
+        }
+
+    try:
+        # Build system prompt for context
+        system_prompt = f"""You are helping with the Transcriptor Pipeline Pilot project.
+Project directory: {PROJECT_ROOT}
+Models directory: {MODELS_DIR}
+
+Focus on helping with:
+- Installing and managing MLX Whisper models
+- Troubleshooting transcription issues
+- Checking system requirements
+- Audio file processing
+
+Be concise and helpful. If asked to run commands, explain what they do first."""
+
+        # Run claude in print mode (non-interactive)
+        result = subprocess.run(
+            [
+                claude_path,
+                '-p',  # Print mode (non-interactive)
+                '--append-system-prompt', system_prompt,
+                prompt
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(PROJECT_ROOT)
+        )
+
+        if result.returncode == 0:
+            return {
+                'success': True,
+                'output': result.stdout.strip(),
+                'error': ''
+            }
+        else:
+            return {
+                'success': False,
+                'output': result.stdout.strip() if result.stdout else '',
+                'error': result.stderr.strip() if result.stderr else 'Unknown error'
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            'success': False,
+            'output': '',
+            'error': f'Request timed out after {timeout} seconds'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'output': '',
+            'error': str(e)
+        }
+
+
 def show_claude_terminal():
     """
-    Show Claude terminal for AI-assisted model installation.
-    
+    Show Claude terminal for AI-assisted interaction.
+
     Features:
-        - Simple command interface
-        - Pre-built commands for common tasks
-        - Model installation, listing, status checking
-        
+        - Real Claude Code CLI integration
+        - Interactive chat interface
+        - Context-aware responses about the project
+
     Impact:
-        - Provides easy model installation
-        - Helps troubleshoot issues
+        - Provides AI-powered assistance
+        - Helps with model management and troubleshooting
     """
     st.markdown("### 🤖 Claude Terminal")
-    st.markdown("AI-assisted terminal for installing and managing models.")
-    
+
+    # Check if Claude CLI is available
+    claude_path = find_claude_cli()
+
+    if claude_path:
+        st.success(f"✅ Claude CLI found: `{claude_path}`")
+        st.markdown("AI-powered terminal using **Claude Code CLI**.")
+    else:
+        st.warning("⚠️ Claude CLI not found. Install from https://claude.ai/claude-code")
+        st.markdown("Using fallback mode with limited commands.")
+
     st.info("""
     **How to use:**
-    1. Type a command or question below
-    2. Claude will help you install models or troubleshoot issues
-    3. Commands are executed in the project directory
+    1. Type any question or request below
+    2. Claude will respond with helpful information
+    3. You can ask about models, transcription, troubleshooting, etc.
 
     **Example prompts:**
-    - "Install the Thai Thonburian model"
-    - "List all available MLX Whisper models"
-    - "Check system requirements"
+    - "How do I install the Thai Thonburian model?"
+    - "What MLX Whisper models are available?"
+    - "Why is my transcription failing?"
+    - "Check if FFmpeg is installed"
     """)
-    
+
     # Claude chat interface
     if 'claude_history' not in st.session_state:
         st.session_state.claude_history = []
-    
+
     # Display chat history
     chat_container = st.container()
     with chat_container:
         for msg in st.session_state.claude_history[-10:]:  # Show last 10 messages
             if msg['role'] == 'user':
-                st.markdown(f"**You:** {msg['content']}")
+                st.markdown(f"**🧑 You:** {msg['content']}")
             else:
-                st.markdown(f"**Claude:** {msg['content']}")
-                if 'command' in msg:
-                    st.code(msg['command'], language='bash')
-                if 'output' in msg:
-                    with st.expander("Command Output"):
-                        st.code(msg['output'])
-    
+                st.markdown(f"**🤖 Claude:**")
+                st.markdown(msg['content'])
+                if msg.get('error'):
+                    st.error(f"Error: {msg['error']}")
+
     st.markdown("---")
-    
+
     # Input
     user_input = st.text_input(
         "Ask Claude...",
-        placeholder="e.g., Install the Thai Thonburian model",
+        placeholder="e.g., How do I install a new model?",
         key="claude_input"
     )
-    
+
     col1, col2 = st.columns([3, 1])
-    
+
     with col1:
         if st.button("🚀 Send", type="primary", use_container_width=True) and user_input:
             st.session_state.claude_history.append({'role': 'user', 'content': user_input})
-            
-            # Simple command parsing for common tasks
-            response = {'role': 'assistant', 'content': ''}
-            
-            user_lower = user_input.lower()
-            
-            if 'install' in user_lower and 'thonburian' in user_lower:
-                response['content'] = "Installing Thai Thonburian model..."
-                response['command'] = "python -c \"from huggingface_hub import snapshot_download; snapshot_download('tawankri/distill-thonburian-whisper-large-v3-mlx', local_dir='models/distill-thonburian-whisper-large-v3-mlx')\""
-                
-                with st.spinner("Downloading model..."):
-                    result = download_model(
-                        'tawankri/distill-thonburian-whisper-large-v3-mlx',
-                        'distill-thonburian-whisper-large-v3-mlx'
-                    )
+
+            response = {'role': 'assistant', 'content': '', 'error': ''}
+
+            if claude_path:
+                # Use real Claude CLI
+                with st.spinner("🤔 Claude is thinking..."):
+                    result = run_claude_cli(user_input)
+
                     if result['success']:
-                        response['output'] = "✅ Model installed successfully!"
+                        response['content'] = result['output']
                     else:
-                        response['output'] = f"❌ Error: {result['error']}"
-            
-            elif 'list' in user_lower and 'model' in user_lower:
-                response['content'] = "Listing installed models..."
-                if MODELS_DIR.exists():
-                    models = [d.name for d in MODELS_DIR.iterdir() if d.is_dir()]
-                    response['output'] = f"Installed models ({len(models)}):\n" + "\n".join(f"  - {m}" for m in models)
-                else:
-                    response['output'] = "No models directory found."
-            
-            elif 'check' in user_lower or 'status' in user_lower:
-                response['content'] = "Checking system status..."
-                checks = []
-                try:
-                    import mlx
-                    checks.append("✅ MLX installed")
-                except ImportError:
-                    checks.append("❌ MLX not installed")
-                try:
-                    import mlx_whisper
-                    checks.append("✅ MLX Whisper installed")
-                except ImportError:
-                    checks.append("❌ MLX Whisper not installed")
-                response['output'] = "\n".join(checks)
-            
-            elif 'help' in user_lower:
-                response['content'] = """Available commands:
-- **install thonburian** - Install Thai Thonburian model
-- **install medium** - Install Whisper Medium model
-- **list models** - Show installed models
-- **check status** - Check system status
-- **help** - Show this help"""
-            
-            elif 'install' in user_lower and 'medium' in user_lower:
-                response['content'] = "Installing Whisper Medium model..."
-                with st.spinner("Downloading model..."):
-                    result = download_model(
-                        'mlx-community/whisper-medium-mlx',
-                        'whisper-medium-mlx'
-                    )
-                    if result['success']:
-                        response['output'] = "✅ Model installed successfully!"
-                    else:
-                        response['output'] = f"❌ Error: {result['error']}"
-            
+                        response['content'] = result['output'] if result['output'] else "Sorry, I couldn't process that request."
+                        response['error'] = result['error']
             else:
-                response['content'] = f"I understand you want to: {user_input}\n\nFor now, I can help with:\n- **install thonburian** - Install Thai Thonburian model\n- **install medium** - Install Whisper Medium model\n- **list models** - Show installed models\n- **check status** - Check system status\n- **help** - Show available commands"
-            
+                # Fallback mode - simple keyword matching
+                user_lower = user_input.lower()
+
+                if 'install' in user_lower and 'thonburian' in user_lower:
+                    response['content'] = "To install the Thai Thonburian model, go to the **Models** tab and click the quick install button, or run:\n\n```python\nfrom huggingface_hub import snapshot_download\nsnapshot_download('tawankri/distill-thonburian-whisper-large-v3-mlx', local_dir='models/distill-thonburian-whisper-large-v3-mlx')\n```"
+
+                elif 'list' in user_lower and 'model' in user_lower:
+                    if MODELS_DIR.exists():
+                        models = [d.name for d in MODELS_DIR.iterdir() if d.is_dir()]
+                        response['content'] = f"**Installed models ({len(models)}):**\n" + "\n".join(f"- {m}" for m in models)
+                    else:
+                        response['content'] = "No models directory found. Run Setup Wizard first."
+
+                elif 'check' in user_lower or 'status' in user_lower:
+                    checks = check_system_status()
+                    lines = ["**System Status:**"]
+                    for name, value, ok in checks:
+                        lines.append(f"- {name}: {value} {'✅' if ok else '❌'}")
+                    response['content'] = "\n".join(lines)
+
+                elif 'help' in user_lower:
+                    response['content'] = """**Available in fallback mode:**
+- Ask about installing models (e.g., "install thonburian")
+- List installed models
+- Check system status
+- General help
+
+*For full AI capabilities, install Claude Code CLI.*"""
+
+                else:
+                    response['content'] = f"*Fallback mode - Claude CLI not available*\n\nYou asked: {user_input}\n\nTry:\n- \"list models\" - Show installed models\n- \"check status\" - Check system status\n- \"help\" - Show available commands"
+
             st.session_state.claude_history.append(response)
             st.rerun()
-    
+
     with col2:
         if st.button("🗑️ Clear", use_container_width=True):
             st.session_state.claude_history = []
